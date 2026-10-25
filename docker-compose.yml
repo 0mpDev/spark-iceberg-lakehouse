@@ -42,16 +42,26 @@ services:
       CATALOG_WAREHOUSE: ${ICEBERG_WAREHOUSE}
       CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
       CATALOG_S3_ENDPOINT: ${MINIO_ENDPOINT}
+      # RustFS is addressed path-style (http://minio:9000/<bucket>/...)
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
 
+  # The original minio/minio image was removed from Docker Hub in Sept 2026.
+  # RustFS is an S3-compatible replacement. Service/container name stays
+  # "minio" so the endpoint http://minio:9000 and all other configs still work.
   minio:
-    image: minio/minio
+    image: rustfs/rustfs:latest
     container_name: minio
     env_file:
       - .env
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      MINIO_DOMAIN: minio
+      RUSTFS_ACCESS_KEY: ${MINIO_ROOT_USER}
+      RUSTFS_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ADDRESS: ":9001"
+      RUSTFS_CONSOLE_ENABLE: "true"
+    volumes:
+      - rustfs-data:/data
     networks:
       iceberg_net:
         aliases:
@@ -59,10 +69,11 @@ services:
     ports:
       - "9001:9001"
       - "9000:9000"
-    command: ["server", "/data", "--console-address", ":9001"]
 
+  # minio/mc was also removed. rustfs/rc is the matching client; this container
+  # creates the bucket once and then exits.
   mc:
-    image: minio/mc
+    image: rustfs/rc:latest
     container_name: mc
     env_file:
       - .env
@@ -70,13 +81,20 @@ services:
       - minio
     networks:
       iceberg_net:
-    entrypoint: >
-      /bin/sh -c "
-      until (/usr/bin/mc alias set minio http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD}) do echo 'waiting for minio...' && sleep 1; done;
-      /usr/bin/mc mb --ignore-existing minio/${MINIO_BUCKET};
-      /usr/bin/mc anonymous set public minio/${MINIO_BUCKET};
-      tail -f /dev/null
-      "
+    restart: "no"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until /usr/bin/rc alias set rustfs http://minio:9000 "${MINIO_ROOT_USER}" "${MINIO_ROOT_PASSWORD}" --region us-east-1 --bucket-lookup path; do
+          echo "waiting for object storage..."
+          sleep 2
+        done
+        until /usr/bin/rc bucket create rustfs/${MINIO_BUCKET} --ignore-existing; do
+          echo "retrying bucket creation..."
+          sleep 2
+        done
+        echo "bucket ready"
 
   trino:
     image: trinodb/trino:481
@@ -110,6 +128,9 @@ services:
     ports:
       - "8081:8080"
     command: standalone
+
+volumes:
+  rustfs-data:
 
 networks:
   iceberg_net:

@@ -24,6 +24,8 @@ def create_spark_session(app_name: str) -> SparkSession:
         .config(f"spark.sql.catalog.{catalog}.warehouse", warehouse)
         .config(f"spark.sql.catalog.{catalog}.io-impl", "org.apache.iceberg.aws.s3.S3FileIO")
         .config(f"spark.sql.catalog.{catalog}.s3.endpoint", minio_endpoint)
+        # RustFS (S3-compatible) needs path-style addressing: http://minio:9000/<bucket>/...
+        .config(f"spark.sql.catalog.{catalog}.s3.path-style-access", "true")
         .config("spark.sql.defaultCatalog", catalog)
         .getOrCreate()
     )
